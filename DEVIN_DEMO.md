@@ -1,6 +1,6 @@
 # Devin demo: Performance fix with p50/p95/p99 proof
 
-**What it shows:** Profile-driven optimization. Devin benchmarks, profiles to find where the time goes, fixes the root causes without changing the API, and shows before/after latency and RPS.
+**What it shows:** Devin benchmarks a slow endpoint, profiles it, fixes the causes without changing the API, and reports p50, p95, p99 latency and RPS before and after.
 
 **Needs:** GitHub only
 
