@@ -8,7 +8,7 @@ More demos: [devin-advanced-demos](https://github.com/thequantexplorer/devin-adv
 
 ## Set it up
 
-1. Click **Use this template → Create a new repository** (or fork it) into your own GitHub account or org.
+1. Click **Use this template → Create a new repository**, choose your GitHub account or org as the owner, and keep the name `devin-demo-performance`. The links and prompt below assume that name. Use the template rather than a fork: pull requests on a fork go to the original repo by default.
 2. In Devin, open [**Settings → Connections → GitHub**](https://app.devin.ai/settings/connections/github) and make sure Devin can access the new repository.
 
 ## Prompt
