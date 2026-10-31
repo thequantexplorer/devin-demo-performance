@@ -1,21 +1,66 @@
 // GET /api/workspaces/:id/dashboard — the customer-facing overview page.
+// One workspace-scoped aggregate query: the filtered events are scanned once into a
+// materialized CTE, then grouped per project (totals) and per project+name (top events).
+const AGGREGATE_SQL = `
+  WITH ev AS MATERIALIZED (
+    SELECT project_id AS pid, name, user_id AS uid, json_extract(props, '$.plan') = 'pro' AS pro
+    FROM events
+    WHERE ts >= @since AND project_id IN (SELECT id FROM projects WHERE workspace_id = @workspaceId)
+  )
+  SELECT pid, 0 AS byName, NULL AS name, COUNT(*) AS n,
+         COUNT(DISTINCT uid) + MAX(uid IS NULL) AS users, TOTAL(pro) AS pro
+  FROM ev GROUP BY pid
+  UNION ALL
+  SELECT pid, 1, name, COUNT(*), NULL, NULL
+  FROM ev GROUP BY pid, name
+`;
+
+const statements = new WeakMap();
+
+function prepared(db) {
+  let s = statements.get(db);
+  if (!s) {
+    s = {
+      projects: db.prepare('SELECT * FROM projects WHERE workspace_id = ?'),
+      aggregate: db.prepare(AGGREGATE_SQL),
+    };
+    statements.set(db, s);
+  }
+  return s;
+}
+
 function dashboard(db, workspaceId, sinceMs) {
-  const projects = db.prepare('SELECT * FROM projects WHERE workspace_id = ?').all(workspaceId);
-  return projects.map((p) => {
-    const events = db.prepare('SELECT * FROM events WHERE project_id = ? AND ts >= ?').all(p.id, sinceMs);
-    const byName = {};
-    const users = new Set();
-    let proEvents = 0;
-    for (const e of events) {
-      byName[e.name] = (byName[e.name] || 0) + 1;
-      users.add(e.user_id);
-      if (JSON.parse(e.props).plan === 'pro') proEvents++;
+  const { projects, aggregate } = prepared(db);
+  const rows = projects.all(workspaceId);
+  if (rows.length === 0) return [];
+
+  const stats = new Map();
+  const statsFor = (pid) => {
+    let st = stats.get(pid);
+    if (!st) stats.set(pid, (st = { events: 0, uniqueUsers: 0, proEvents: 0, byName: new Map() }));
+    return st;
+  };
+  for (const r of aggregate.all({ workspaceId, since: sinceMs })) {
+    const st = statsFor(r.pid);
+    if (r.byName) {
+      // Object keys in the original were String(name); merge groups that stringify alike (e.g. NULL and 'null').
+      const key = String(r.name);
+      st.byName.set(key, (st.byName.get(key) || 0) + r.n);
+    } else {
+      st.events = r.n;
+      st.uniqueUsers = r.users;
+      st.proEvents = r.pro;
     }
-    const topEvents = Object.entries(byName)
+  }
+
+  return rows.map((p) => {
+    const st = stats.get(p.id);
+    if (!st) return { projectId: p.id, name: p.name, events: 0, uniqueUsers: 0, proEvents: 0, topEvents: [] };
+    const topEvents = [...st.byName]
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, 3)
       .map(([name, count]) => ({ name, count }));
-    return { projectId: p.id, name: p.name, events: events.length, uniqueUsers: users.size, proEvents, topEvents };
+    return { projectId: p.id, name: p.name, events: st.events, uniqueUsers: st.uniqueUsers, proEvents: st.proEvents, topEvents };
   });
 }
 
