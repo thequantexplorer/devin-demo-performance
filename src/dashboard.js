@@ -1,9 +1,21 @@
 // GET /api/workspaces/:id/dashboard — the customer-facing overview page.
 // One workspace-scoped aggregate query: the filtered events are scanned once into a
 // materialized CTE, then grouped per project (totals) and per project+name (top events).
+//
+// `pro` mirrors `JSON.parse(props).plan === 'pro'`: props must be strict JSON (no JSON5),
+// SQL NULL / JSON null fail the query like the original TypeError, and duplicate top-level
+// `plan` keys resolve to the last occurrence (json_each; json_extract would pick the first).
+// Fast path: with no escapes and at most one literal "plan" there can be no duplicate key.
+// The ELSE branch raises "malformed JSON".
 const AGGREGATE_SQL = `
   WITH ev AS MATERIALIZED (
-    SELECT project_id AS pid, name, user_id AS uid, json_extract(props, '$.plan') = 'pro' AS pro
+    SELECT project_id AS pid, name, user_id AS uid,
+      CASE WHEN json_valid(props, 1) AND json_type(props) <> 'null' THEN
+        CASE WHEN instr(props, '\\') = 0 AND length(props) - length(replace(props, '"plan"', '')) <= 6
+          THEN coalesce(json_extract(props, '$.plan') = 'pro', 0)
+          ELSE coalesce((SELECT type = 'text' AND value = 'pro' FROM json_each(props) WHERE key = 'plan' ORDER BY id DESC LIMIT 1), 0)
+        END
+      ELSE json('{,' || ifnull(props, '')) END AS pro
     FROM events
     WHERE ts >= @since AND project_id IN (SELECT id FROM projects WHERE workspace_id = @workspaceId)
   )

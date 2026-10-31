@@ -102,3 +102,48 @@ test('runs a fixed number of queries regardless of project count', () => {
   assert.strictEqual(dashboard(spy, 1, 0).length, 32);
   assert.strictEqual(executions, 2);
 });
+
+function propsFixture(props) {
+  const db = openDb(':memory:');
+  db.prepare("INSERT INTO projects VALUES (1, 1, 'A'), (2, 2, 'Other')").run();
+  const e = db.prepare('INSERT INTO events (project_id, name, user_id, ts, props) VALUES (?, ?, ?, ?, ?)');
+  e.run(1, 'page_view', 1, 100, '{"plan":"pro"}');
+  for (const p of props) e.run(1, 'page_view', 2, 100, p);
+  return db;
+}
+
+test('props that the original JSON.parse rejects or cannot read .plan from fail the request', () => {
+  for (const bad of [null, 'null', ' null ', '{"plan":"pro",}', '{plan:"pro"}', "{'plan':'pro'}", '{"a":[1,]}', '{"a":0x1}', '/*c*/{}', '', '}']) {
+    const db = propsFixture([bad]);
+    assert.throws(() => reference(db, 1, 0), `reference should throw for ${bad}`);
+    assert.throws(() => dashboard(db, 1, 0), `dashboard should throw for ${bad}`);
+  }
+});
+
+test('invalid props outside the since window or workspace do not fail the request', () => {
+  const db = propsFixture([]);
+  const e = db.prepare('INSERT INTO events (project_id, name, user_id, ts, props) VALUES (?, ?, ?, ?, ?)');
+  e.run(1, 'page_view', 3, 50, null);
+  e.run(2, 'page_view', 3, 100, '{"plan":"pro",}');
+  const expected = [{ projectId: 1, name: 'A', events: 1, uniqueUsers: 1, proEvents: 1, topEvents: [{ name: 'page_view', count: 1 }] }];
+  assert.deepStrictEqual(dashboard(db, 1, 100), expected);
+  assert.deepStrictEqual(reference(db, 1, 100), expected);
+});
+
+test('duplicate plan keys use the last occurrence; non-object roots are not pro', () => {
+  const props = ['{"plan":"free","plan":"pro"}', '{"plan":"pro","plan":"free"}', '{"plan":"pro","plan":{"x":1}}', '{"pl\\u0061n":"pr\\u006f"}', '5', '"pro"', 'true', '["pro"]', '[{"plan":"pro"}]', ' \t{"plan":"pro"}\r\n'];
+  const db = propsFixture(props);
+  const expected = [{ projectId: 1, name: 'A', events: 11, uniqueUsers: 2, proEvents: 4, topEvents: [{ name: 'page_view', count: 11 }] }];
+  assert.deepStrictEqual(dashboard(db, 1, 0), expected);
+  assert.deepStrictEqual(reference(db, 1, 0), expected);
+});
+
+test('HTTP: NULL props still returns 500', async () => {
+  const request = require('supertest');
+  const { createApp } = require('../src/app');
+  const res = await request(createApp(propsFixture([null]))).get('/api/workspaces/1/dashboard?since=0');
+  assert.strictEqual(res.status, 500);
+  const ok = await request(createApp(propsFixture([]))).get('/api/workspaces/1/dashboard?since=0');
+  assert.strictEqual(ok.status, 200);
+  assert.strictEqual(ok.body.projects[0].proEvents, 1);
+});
