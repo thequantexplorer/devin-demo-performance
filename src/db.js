@@ -4,6 +4,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS workspaces (id INTEGER PRIMARY KEY, name TEXT);
   CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, workspace_id INTEGER, name TEXT);
   CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, project_id INTEGER, name TEXT, user_id INTEGER, ts INTEGER, props TEXT);
+  CREATE INDEX IF NOT EXISTS idx_events_project_ts ON events (project_id, ts);
 `;
 
 function openDb(file) {
